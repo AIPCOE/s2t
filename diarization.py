@@ -58,7 +58,13 @@ def transcribe_with_speaker_diarization(audio_file_path, huggingface_token=None)
     print("1) Modeller yükleniyor...")
 
     # Whisper
-    whisper_model = whisper.load_model("large")
+    if torch.cuda.is_available():
+        whisper_device = "cuda"
+    else:
+        whisper_device = "cpu"
+    print(f"Whisper kullanılacak cihaz: {whisper_device}")
+
+    whisper_model = whisper.load_model("large", device=whisper_device)
     print("   • Whisper OK")
 
     # pyannote
@@ -74,9 +80,9 @@ def transcribe_with_speaker_diarization(audio_file_path, huggingface_token=None)
 
     if torch.cuda.is_available():
         pipeline = pipeline.to(torch.device("cuda"))
-        print("   • GPU kullanılacak")
+        print("pyannote pipeline cihazı: cuda (GPU kullanılacak)")
     else:
-        print("   • CPU kullanılacak")
+        print("pyannote pipeline cihazı: cpu (CPU kullanılacak)")
 
     # 2) Speaker diarization
     print("2) Konuşmacı ayrımı...")
@@ -111,11 +117,20 @@ def transcribe_with_speaker_diarization(audio_file_path, huggingface_token=None)
             continue
 
         segment_tl = Segment(start, end)
-        overlaps = [
-            (spk, turn.intersect(segment_tl).duration)
-            for turn, _, spk in diarization.itertracks(yield_label=True)
-            if turn.overlaps(segment_tl)
-        ]
+        overlaps = []
+        for turn, _, spk in diarization.itertracks(yield_label=True):
+            print(f"turn type: {type(turn)}, segment_tl type: {type(segment_tl)}")
+            if not isinstance(turn, Segment):
+                continue
+            if not isinstance(segment_tl, Segment):
+                continue
+            try:
+                if turn.overlaps(segment_tl):
+                    intersection = turn.intersect(segment_tl)
+                    if intersection is not None:
+                        overlaps.append((spk, intersection.duration))
+            except Exception as e:
+                print(f"overlaps hatası: {e}")
         chosen_speaker = max(overlaps, key=lambda x: x[1])[0] if overlaps else "KONUŞMACI_BİLİNMEYEN"
 
         final_result.append({
@@ -137,9 +152,15 @@ def debug_diarization(audio_file_path, huggingface_token):
         "pyannote/speaker-diarization-3.1",
         use_auth_token=huggingface_token
     )
+    # Cihaz bilgisini ekrana bas
+    if torch.cuda.is_available():
+        pipeline = pipeline.to(torch.device("cuda"))
+        print("pyannote pipeline cihazı: cuda (GPU kullanılacak)")
+    else:
+        print("pyannote pipeline cihazı: cpu (CPU kullanılacak)")
     diarization = pipeline(audio_file_path)
     timeline = diarization.get_timeline()
-    print(f"   • Süre: {timeline.duration:.2f} sn")   # ← duration _özellik_ oldu
+    print(f"   • Süre: {timeline.duration():.2f} sn")
     print(f"   • Konuşmacılar: {list(diarization.labels())[:10]}...")
     return diarization
 
@@ -150,6 +171,14 @@ def debug_diarization(audio_file_path, huggingface_token):
 if __name__ == "__main__":
     AUDIO_FILE = "audio.wav"                     # Ses dosyanız
     HF_TOKEN   = "hf_XXXX"   # Token’iniz
+    
+    print("CUDA kullanılabilir mi?", torch.cuda.is_available())
+    print("CUDA cihaz sayısı:", torch.cuda.device_count())
+    if torch.cuda.is_available():
+        print("Cihaz adı:", torch.cuda.get_device_name(0))
+    else:
+        print("GPU bulunamadı veya CUDA desteklenmiyor.")
+    print("PyTorch sürümü:", torch.__version__)
 
     if not os.path.exists(AUDIO_FILE):
         raise FileNotFoundError(f"Ses dosyası yok: {AUDIO_FILE}")
